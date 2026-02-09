@@ -1,0 +1,27 @@
+# Ignore virtual environments
+.venv/
+env/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore database files
+*.db
+
+# Ignore Excel files
+*.xlsx
+
+# Ignore logs
+logs/
+*.log
+
+# Ignore notebooks
+*.ipynb
+
+# Ignore pdf folder content
+pdfs/*
+
+
+
