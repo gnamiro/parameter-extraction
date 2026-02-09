@@ -1,13 +1,16 @@
 # Rule-Based PDF Metadata & Nanomaterial Extraction
 
-This project implements a rule-based pipeline to extract structured information from scientific PDF papers, with a focus on:
+**Rule-based + Optional Ollama (LLM-Hybrid)**
+
+This project extracts structured information from scientific PDF papers, with a focus on:
 
     - Paper metadata
     - Nanomaterial identity
 
-⚠️ Note:
-LLM-based extraction is intentionally disabled / experimental and not documented here.
-This README describes only the deterministic, rule-based extraction.
+The pipeline is designed with a rule-based core and an optional LLM refinement layer using Ollama.
+
+    ✅ Rule-based extraction is the default and fully deterministic
+    ⚠️ LLM support is optional, experimental, and used only as a refinement layer
 
 -------------------
 
@@ -52,28 +55,33 @@ This README describes only the deterministic, rule-based extraction.
 ```text
 keyword_extractor/
 │
-├── run.py                      # Entry point
+├── run.py
 ├── requirements.txt
 ├── README.md
 │
 ├── extract/
-│   ├── cli.py                  # CLI argument parsing
+│   ├── cli.py
 │   │
 │   ├── pipeline/
-│   │   └── runner.py            # Orchestrates extraction flow
+│   │   └── runner.py
 │   │
 │   ├── io/
-│   │   ├── pdf_reader.py        # PDF text + layout extraction
-│   │   └── excel_writer.py      # Excel output
+│   │   ├── pdf_reader.py
+│   │   └── excel_writer.py
 │   │
 │   ├── extractors/
-│   │   ├── metadata.py          # Title, DOI, year, keywords, article type
-│   │   └── nanomaterial.py      # Nanomaterial identity rules
+│   │   ├── metadata.py
+│   │   └── nanomaterial.py
+│   │
+│   ├── llm/
+│   │   └── ollama_client.py        # LLM refinement (PATCH-based)
 │   │
 │   └── utils/
-│       └── text.py              # Helpers (reference removal, cleanup)
+│       ├── merge.py                # PATCH + merge logic
+│       └── sectioning.py           # Abstract / keyword hints
 │
-└── pdfs/                        # Input PDFs
+└── pdfs/
+
 
 ```
 
@@ -128,4 +136,44 @@ python run.py \
 
 - `--excel` : output Excel file path
 
-⚠️ Do not use --llm for now (LLM path is experimental).
+
+### Optional: LLM-Hybrid mode with Ollama
+#### 5.1 What the LLM is used for (important)
+The LLM does NOT replace rule-based extraction.
+Instead, the pipeline works as:
+```bash
+Rules → Structured baseline
+      → LLM produces a PATCH (only confident fields)
+      → PATCH is merged into rules
+```
+✅ Hybrid output can only improve or correct fields
+
+❌ Hybrid output can never remove rule-based information
+
+#### 5.2 Install Ollama
+Download and install Ollama:
+👉 https://ollama.com
+
+#### 5.3 Pull a recommended model
+I used `qwen2.5:7b`, feel free to use any model that suits your project.
+
+```bash
+ollama pull qwen2.5:7b
+```
+Alternatives:
+- `mistral-large:123b` (better accuracy if hardware allows)
+- `llama3.1:8b` (more stable)
+
+#### 5.4 Run pipeline with LLM refinement
+```bash
+python run.py \
+  --pdf_dir ./pdfs \
+  --llm \
+  --llm_model qwen2.5:7b
+```
+
+## Current limitations (known & expected)
+- Tables are not yet parsed as structured tables
+- Images are not OCRed
+- MeSH terms only extracted if explicitly present
+- LLM refinement is experimental and may be disabled safely

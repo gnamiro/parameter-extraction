@@ -1,146 +1,199 @@
+from __future__ import annotations
+
 import json
 import re
-from typing import Any, Dict, Optional
-
 import requests
+from typing import Any, Dict, Optional, Tuple
 
 
-class OllamaError(RuntimeError):
-    pass
-
+# ---------------------------
+# Low-level helpers
+# ---------------------------
 
 def _strip_code_fences(s: str) -> str:
-    """
-    Some models wrap JSON in ```json ... ``` fences. Remove them safely.
-    """
     s = s.strip()
     if s.startswith("```"):
         s = re.sub(r"^```[a-zA-Z0-9]*\s*", "", s)
         s = re.sub(r"\s*```$", "", s)
     return s.strip()
 
+def _extract_first_json_object(s: str) -> Optional[str]:
+    """
+    Finds the first balanced {...} JSON object substring.
+    """
+    s = _strip_code_fences(s)
+    start = s.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for i in range(start, len(s)):
+        ch = s[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start:i + 1]
+    return None
 
 def _safe_json_loads(s: str) -> Optional[Dict[str, Any]]:
+    """
+    Parses JSON even if the model added extra text/code fences.
+    Returns dict or None.
+    """
     s2 = _strip_code_fences(s)
     try:
-        return json.loads(s2)
+        obj = json.loads(s2)
+        return obj if isinstance(obj, dict) else None
     except Exception:
-        return None
-
+        chunk = _extract_first_json_object(s2)
+        if not chunk:
+            return None
+        try:
+            obj = json.loads(chunk)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
 
 def ollama_chat(
     model: str,
     messages: list[dict],
     host: str = "http://localhost:11434",
     timeout: int = 120,
+    temperature: float = 0.0,
 ) -> str:
-    """
-    Calls Ollama chat API and returns the assistant message content as a string.
-    """
     url = f"{host}/api/chat"
     payload = {
         "model": model,
         "messages": messages,
         "stream": False,
         "options": {
-            "temperature": 0.0,
+            "temperature": temperature,
         },
     }
-
     r = requests.post(url, json=payload, timeout=timeout)
-    if r.status_code != 200:
-        raise OllamaError(f"Ollama API error {r.status_code}: {r.text}")
-
+    r.raise_for_status()
     data = r.json()
     return data["message"]["content"]
 
 
-def refine_with_ollama(
-    result: dict,
-    full_text: str,
+# ---------------------------
+# Patch-based refinement
+# ---------------------------
+
+_ALLOWED_PAPER_FIELDS = {
+    "title", "year", "doi", "source_url",
+    "article_type", "author_keywords", "mesh_keywords",
+}
+
+_ALLOWED_NANO_FIELDS = {
+    "core_compositions", "nm_category", "physical_phase", "crystallinity",
+    "cas_number", "catalog_or_batch", "evidence",
+}
+
+def _sanitize_patch(patch: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Keep only {paper, nanomaterial} top-level keys and allowed fields within them.
+    """
+    out: Dict[str, Any] = {}
+
+    if "paper" in patch and isinstance(patch["paper"], dict):
+        out["paper"] = {k: v for k, v in patch["paper"].items() if k in _ALLOWED_PAPER_FIELDS}
+
+    if "nanomaterial" in patch and isinstance(patch["nanomaterial"], dict):
+        out["nanomaterial"] = {k: v for k, v in patch["nanomaterial"].items() if k in _ALLOWED_NANO_FIELDS}
+
+    # Drop empty dicts
+    out = {k: v for k, v in out.items() if isinstance(v, dict) and len(v) > 0}
+    return out
+
+def refine_patch_with_ollama(
+    draft_rules_result: dict,
+    title_page_text: str,
+    abstract_text: str,
+    keywords_hint: str,
+    nanomaterial_evidence: str,
     model: str,
     host: str = "http://localhost:11434",
     timeout: int = 120,
-    max_chars: int = 12000,
-) -> dict:
+) -> Tuple[Optional[Dict[str, Any]], str]:
     """
-    Hybrid refine step:
-      - Input: rule-based result + extracted text snippet
-      - Output: JSON strictly matching expected schema
-    If LLM output invalid, returns the original rule-based `result`.
-    """
+    Returns (patch_or_none, raw_output).
 
-    # Keep prompt size under control
-    text = full_text[:max_chars]
+    PATCH rules:
+      - Output must be JSON only.
+      - Top-level keys can only be: paper, nanomaterial.
+      - Only include fields you are confident about.
+      - If unknown: OMIT the field (do NOT output null).
+    """
 
     schema_hint = {
         "paper": {
-            "title": "string|null",
-            "year": "int|null",
-            "doi": "string|null",
-            "source_url": "string|null",
-            "extraction_method": "string (will be set by pipeline)"
+            "title": "string",
+            "year": "int",
+            "doi": "string",
+            "source_url": "string",
+            "article_type": "in vitro|in vivo|field|review|modelling|method",
+            "author_keywords": "string (semicolon-separated)",
+            "mesh_keywords": "string (semicolon-separated)",
         },
         "nanomaterial": {
-            "core_compositions": "list[string] (e.g., ['TiO2','ZnO'])",
+            "core_compositions": "list[string] (e.g., ['TiO2','ZnO','Ag','CNT','graphene'])",
             "nm_category": "metal|metal_oxide|carbon|silica|polymer_plastic|quantum_dot|mof|nanocellulose|liposome|other",
-            "physical_phase": "string|null (e.g., anatase; rutile)",
-            "crystallinity": "string|null",
-            "cas_number": "string|null",
-            "catalog_or_batch": "string|null",
-            "evidence": "string|null (short snippet proving the extraction)"
+            "physical_phase": "string (e.g., anatase; rutile)",
+            "crystallinity": "string",
+            "cas_number": "string (format: 1234-56-7)",
+            "catalog_or_batch": "string (e.g., lot=ABC123)",
+            "evidence": "short string <=250 chars copied from provided text",
         }
     }
 
     system_msg = (
-        "You are an information extraction engine. "
-        "Your job: refine a draft extraction from a scientific PDF text. "
-        "Rules:\n"
-        "1) Output ONLY valid JSON. No markdown. No extra text.\n"
-        "2) Do NOT guess. If not explicitly present, use null or [].\n"
-        "3) Prefer exact strings from the text.\n"
-        "4) Keep evidence short (<= 250 chars) and taken from the text.\n"
-        "5) core_compositions must be chemical/material tokens (e.g., TiO2, ZnO, Ag, CNT, graphene).\n"
+        "You are a scientific PDF information extraction engine.\n"
+        "Return ONLY valid JSON. No markdown. No extra text.\n"
+        "Your output MUST be a PATCH object.\n"
+        "Top-level keys allowed: 'paper', 'nanomaterial'.\n"
+        "Within each, include only fields you are confident are explicitly supported by the provided snippets.\n"
+        "If a field is unknown, OMIT it (do NOT output null, do NOT guess).\n"
+        "If you set nanomaterial fields, include a short 'evidence' snippet (<=250 chars) copied from snippets.\n"
+        "Schema:\n"
+        + json.dumps(schema_hint, ensure_ascii=False)
     )
 
-    instruction = (
-        "Return ONLY a JSON object with exactly two top-level keys: "
-        '"paper" and "nanomaterial". Do not include "task", "schema", '
-        '"draft_extraction", or "pdf_text_snippet" in the output. '
-        "Do NOT guess. If missing, use null or []."
+    # Keep the prompt compact; the model performs better and drops fewer fields
+    payload = {
+        "draft_rules_result": draft_rules_result,
+        "snippets": {
+            "title_page_text": (title_page_text or "")[:2500],
+            "abstract_text": (abstract_text or "")[:2500],
+            "keywords_hint": (keywords_hint or "")[:800],
+            "nanomaterial_evidence": (nanomaterial_evidence or "")[:1200],
+        },
+        "output_instructions": {
+            "format": "PATCH JSON only",
+            "top_level_keys": ["paper", "nanomaterial"],
+            "paper_fields_allowed": sorted(_ALLOWED_PAPER_FIELDS),
+            "nanomaterial_fields_allowed": sorted(_ALLOWED_NANO_FIELDS),
+        },
+    }
+
+    raw = ollama_chat(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        host=host,
+        timeout=timeout,
+        temperature=0.0,
     )
 
-    user_content = (
-        instruction
-        + "\n\nDRAFT_JSON:\n"
-        + json.dumps(result, ensure_ascii=False)
-        + "\n\nTEXT_SNIPPET:\n"
-        + text
-    )
-
-
-    messages = [
-        {"role": "system", "content": system_msg},
-        {"role": "user", "content": user_content},
-    ]
-
-    raw = ollama_chat(model=model, messages=messages, host=host, timeout=timeout)
     parsed = _safe_json_loads(raw)
-    print(f"Raw LLM output:\n{raw}\nParsed LLM output:\n{parsed}")
     if not isinstance(parsed, dict):
-        # fallback to rules if parsing fails
-        result["paper"]["llm_model"] = model
-        result["paper"]["llm_status"] = "invalid_json_fallback_to_rules"
-        return result
+        return None, raw
 
-    # minimal sanity checks
-    if "paper" not in parsed or "nanomaterial" not in parsed:
-        result["paper"]["llm_model"] = model
-        result["paper"]["llm_status"] = "missing_keys_fallback_to_rules"
-        return result
+    patch = _sanitize_patch(parsed)
+    if not patch:
+        return None, raw
 
-    parsed["paper"]["llm_model"] = model
-    parsed["paper"]["llm_status"] = "ok"
-    print("LLM refinement successful. Parsed output:")
-    print(parsed)
-    return parsed
+    return patch, raw

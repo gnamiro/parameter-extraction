@@ -6,7 +6,9 @@ from extract.extractors.metadata import (
     extract_title_from_first_page_layout,
 )
 from extract.extractors.nanomaterial import extract_nanomaterial_identity
-from extract.llm.ollama_client import refine_with_ollama # This can be changed with any LLM client or stub
+from extract.utils.merge import merge_patch
+from extract.utils.sectioning import extract_abstract, extract_keywords_hint
+from extract.llm.ollama_client import refine_patch_with_ollama # This can be changed with any LLM client or stub
 from extract.db.sqlite import init_sqlite, upsert_paper_and_insert_nanomat
 from extract.io.pdf_reader import (
     extract_pdf_text_first_pages,
@@ -15,6 +17,8 @@ from extract.io.pdf_reader import (
     join_pages,
 )
 from extract.io.excel_writer import write_excel
+
+
 
 def list_pdfs(pdf_dir: str) -> list[str]:
     return [
@@ -56,7 +60,7 @@ def run_pipeline(
 
         if title_layout:
             meta["title"] = title_layout
-            
+
         pages_all = extract_pdf_text_all_pages(pdf_path)
         text_all = join_pages(pages_all)
 
@@ -65,18 +69,38 @@ def run_pipeline(
         text_all_clean = remove_references(text_all)
         nano = extract_nanomaterial_identity(text=text_all_clean)
 
-        result = {"paper": meta, "nanomaterial": nano}
+
+        result_rules = {"paper": meta, "nanomaterial": nano}
+        result_rules["paper"]["extraction_method"] = "rules"
+        result = result_rules
 
         if use_llm:
-            refined = refine_with_ollama(result=result, full_text=text_all_clean, model=llm_model)
+            title_page_text = pages_meta[0]["text"] if pages_meta else text_meta
+            abstract_text = extract_abstract(text_meta)
+            keywords_hint = extract_keywords_hint(text_meta)
+            nano_evidence = nano.get("evidence") or ""
 
-            # Only accept refinement if the refiner explicitly says ok
-            if refined.get("paper", {}).get("llm_status") == "ok":
-                result = refined
-                result["paper"]["extraction_method"] = "hybrid_llm"
+            patch, raw = refine_patch_with_ollama(
+                draft_rules_result=result_rules,
+                title_page_text=title_page_text,
+                abstract_text=abstract_text,
+                keywords_hint=keywords_hint,
+                nanomaterial_evidence=nano_evidence,
+                model=llm_model,
+            )
+
+            # Debug prints (optional)
+            print(f"Raw LLM output:\n{raw}\nParsed PATCH:\n{patch}")
+
+            if patch:
+                merged = merge_patch(result_rules, patch)
+                merged["paper"]["extraction_method"] = "hybrid_llm"
+                merged["paper"]["llm_model"] = llm_model
+                merged["paper"]["llm_status"] = "ok_patch_merged"
+                result = merged
             else:
-                # fallback to rules
-                result["paper"]["extraction_method"] = "rules"
+                result["paper"]["llm_model"] = llm_model
+                result["paper"]["llm_status"] = "no_patch_fallback_to_rules"
         else:
             result["paper"]["extraction_method"] = "rules"
 
