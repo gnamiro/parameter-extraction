@@ -113,6 +113,7 @@ def refine_patch_with_ollama(
     abstract_text: str,
     keywords_hint: str,
     nanomaterial_evidence: str,
+    descriptor_snippets: str,
     model: str,
     host: str = "http://localhost:11434",
     timeout: int = 120,
@@ -156,6 +157,8 @@ def refine_patch_with_ollama(
         "Within each, include only fields you are confident are explicitly supported by the provided snippets.\n"
         "If a field is unknown, OMIT it (do NOT output null, do NOT guess).\n"
         "If you set nanomaterial fields, include a short 'evidence' snippet (<=250 chars) copied from snippets.\n"
+        "If descriptor_snippets contains size/zeta/PDI/CAS values, extract them.\n"
+        "Only use the provided snippets. Do not infer values.\n"
         "Schema:\n"
         + json.dumps(schema_hint, ensure_ascii=False)
     )
@@ -175,6 +178,7 @@ def refine_patch_with_ollama(
             "paper_fields_allowed": sorted(_ALLOWED_PAPER_FIELDS),
             "nanomaterial_fields_allowed": sorted(_ALLOWED_NANO_FIELDS),
         },
+        "descriptor_snippets": (descriptor_snippets or "")[:3500],
     }
 
     raw = ollama_chat(

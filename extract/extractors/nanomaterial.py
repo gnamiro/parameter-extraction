@@ -1,8 +1,41 @@
 import re
 from typing import Optional
 
-# --- IDs for reproducibility ---
-CAS_RE = re.compile(r"\bCAS\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9]{2,7}-[0-9]{2}-[0-9])\b", re.I)
+DASH = r"[-–—]"  # hyphen, en-dash, em-dash
+
+SIZE_RE = re.compile(
+    rf"(?:particle\s+size|hydrodynamic\s+size|diameter|mean\s+particle\s+size)\s*"
+    rf"(?:was|is|of|:|=)?\s*"
+    rf"([0-9]+(?:\.[0-9]+)?(?:\s*{DASH}\s*[0-9]+(?:\.[0-9]+)?)?\s*(?:nm|µm|um))",
+    re.I
+)
+
+ZETA_RE = re.compile(
+    rf"(?:zeta\s+potential(?:s)?|ζ)\s*(?:was|is|of|:|=)?\s*"
+    rf"([-−]?\s*[0-9]+(?:\.[0-9]+)?(?:\s*{DASH}\s*[-−]?\s*[0-9]+(?:\.[0-9]+)?)?\s*mV)",
+    re.I
+)
+
+PDI_RE = re.compile(
+    rf"(?:\bPDI\b|polydispersity\s+index)\s*(?:was|is|of|:|=)?\s*"
+    rf"([0-9]+(?:\.[0-9]+)?(?:\s*{DASH}\s*[0-9]+(?:\.[0-9]+)?)?)",
+    re.I
+)
+
+MORPH_RE = re.compile(
+    r"\b(spherical|sphere-like|rod[-\s]?shaped|nanorods?|cubic|cube[-\s]?shaped|"
+    r"irregular|fibrous|needle[-\s]?like|plate[-\s]?like|sheet[-\s]?like)\b",
+    re.I
+)
+
+# Simple "nanoparticle name" capture: grabs phrases like "Silica nanoparticles (SiNPs)"
+NP_NAME_RE = re.compile(
+    r"\b([A-Z][a-z]+(?:\s+[a-z]+){0,3}\s+nanoparticles?)\s*(?:\(([A-Za-z0-9\-]{2,12})\))?",
+    re.I
+)
+
+
+CAS_RE = re.compile(r"\b(\d{2,7}-\d{2}-\d)\b")
 
 # Avoid the earlier issue "lot=of" by requiring digits in the ID token
 BATCH_RE = re.compile(
@@ -195,9 +228,44 @@ def pick_evidence(text: str, cores: list[str], max_len: int = 250) -> Optional[s
             return snippet[:max_len]
     return None
 
+
+def extract_particle_size(text: str) -> Optional[str]:
+    m = SIZE_RE.search(text)
+    return m.group(1).strip() if m else None
+
+def extract_zeta_potential(text: str) -> Optional[str]:
+    m = ZETA_RE.search(text)
+    if not m:
+        return None
+    # normalize spaces; keep minus sign
+    return re.sub(r"\s+", "", m.group(1)).strip()
+
+def extract_pdi(text: str) -> Optional[str]:
+    m = PDI_RE.search(text)
+    return m.group(1).strip() if m else None
+
+def extract_morphology(text: str) -> Optional[str]:
+    m = MORPH_RE.search(text)
+    return m.group(1).strip().lower() if m else None
+
+def extract_nanoparticle_name(text: str) -> Optional[str]:
+    """
+    Best-effort: returns a surface name like 'Silica nanoparticles (SiNPs)' or 'Silver nanoparticles (AgNPs)'.
+    """
+    m = NP_NAME_RE.search(text)
+    if not m:
+        return None
+    base = " ".join(m.group(1).split())
+    abbr = m.group(2)
+    if abbr:
+        return f"{base} ({abbr})"
+    return base
+
 def extract_nanomaterial_identity(text: str) -> dict:
     cores = extract_core_compositions(text)
-    return {
+
+    # Existing fields
+    out = {
         "core_compositions": cores,
         "nm_category": infer_nm_category(cores),
         "physical_phase": extract_polymorph(text),
@@ -206,3 +274,19 @@ def extract_nanomaterial_identity(text: str) -> dict:
         "catalog_or_batch": extract_catalog_or_batch(text),
         "evidence": pick_evidence(text, cores) if cores else None,
     }
+
+    # New descriptor fields
+    out["nanoparticle_name"] = extract_nanoparticle_name(text)
+    out["particle_size"] = extract_particle_size(text)
+    out["zeta_potential"] = extract_zeta_potential(text)
+    out["morphology"] = extract_morphology(text)
+    out["pdi"] = extract_pdi(text)
+
+    # Ensure keys exist even if missing (stable Excel schema)
+    out.setdefault("nanoparticle_name", None)
+    out.setdefault("particle_size", None)
+    out.setdefault("zeta_potential", None)
+    out.setdefault("morphology", None)
+    out.setdefault("pdi", None)
+
+    return out

@@ -6,8 +6,10 @@ from extract.extractors.metadata import (
     extract_title_from_first_page_layout,
 )
 from extract.extractors.nanomaterial import extract_nanomaterial_identity
+from extract.extractors.bio_effects import extract_bio_effects
 from extract.utils.merge import merge_patch
 from extract.utils.sectioning import extract_abstract, extract_keywords_hint
+from extract.utils.snippets import extract_descriptor_snippets
 from extract.llm.ollama_client import refine_patch_with_ollama # This can be changed with any LLM client or stub
 from extract.db.sqlite import init_sqlite, upsert_paper_and_insert_nanomat
 from extract.io.pdf_reader import (
@@ -48,6 +50,7 @@ def run_pipeline(
     for pdf_path in pdfs:
         file_hash = sha256_file(pdf_path)
 
+        # Extract metadata from first pages (title, year, doi, keywords, etc.)
         pages_meta = extract_pdf_text_first_pages(pdf_path, max_pages=max_pages)
 
         text_meta = join_pages(pages_meta)
@@ -67,10 +70,13 @@ def run_pipeline(
 
 
         text_all_clean = remove_references(text_all)
+        descriptor_snips = extract_descriptor_snippets(text_all_clean)
         nano = extract_nanomaterial_identity(text=text_all_clean)
+        bio = extract_bio_effects(text_all_clean)
 
-
-        result_rules = {"paper": meta, "nanomaterial": nano}
+        
+        # Starting the LLM:
+        result_rules = {"paper": meta, "nanomaterial": nano, "bio_effects": bio}
         result_rules["paper"]["extraction_method"] = "rules"
         result = result_rules
 
@@ -81,14 +87,14 @@ def run_pipeline(
             nano_evidence = nano.get("evidence") or ""
 
             patch, raw = refine_patch_with_ollama(
-                draft_rules_result=result_rules,
-                title_page_text=title_page_text,
-                abstract_text=abstract_text,
-                keywords_hint=keywords_hint,
-                nanomaterial_evidence=nano_evidence,
-                model=llm_model,
-            )
-
+                            draft_rules_result=result_rules,
+                            title_page_text=title_page_text,
+                            abstract_text=abstract_text,
+                            keywords_hint=keywords_hint,
+                            nanomaterial_evidence=nano_evidence,
+                            descriptor_snippets=descriptor_snips,
+                            model=llm_model,
+                        )
             # Debug prints (optional)
             print(f"Raw LLM output:\n{raw}\nParsed PATCH:\n{patch}")
 
@@ -124,26 +130,45 @@ def run_pipeline(
         print(f"Saved to Excel: {excel_path}")
 
 def flatten_for_excel(result: dict) -> dict:
-    p = result["paper"]
-    n = result["nanomaterial"]
-    return {
-        "file_path": p.get("file_path"),
-        "file_hash": p.get("file_hash"),
-        "title": one_line(p.get("title")),
-        "year": p.get("year"),
-        "doi": p.get("doi"),
-        "source_url": p.get("source_url"),
-        "extraction_method": p.get("extraction_method"),
+    paper = result.get("paper", {})
+    nano = result.get("nanomaterial", {})
+    bio = result.get("bio_effects", {})
 
-        "article_type": p.get("article_type"),
-        "author_keywords": p.get("author_keywords"),
-        "mesh_keywords": p.get("mesh_keywords"),
+    def join_list(v):
+        if isinstance(v, list):
+            return "; ".join(str(x) for x in v)
+        return v
 
-        "core_compositions": "; ".join(n.get("core_compositions") or []),
-        "nm_category": n.get("nm_category"),
-        "physical_phase": n.get("physical_phase"),
-        "crystallinity": n.get("crystallinity"),
-        "cas_number": n.get("cas_number"),
-        "catalog_or_batch": n.get("catalog_or_batch"),
-        "evidence": n.get("evidence"),
+    row = {
+        "file_path": paper.get("file_path"),
+        "file_hash": paper.get("file_hash"),
+        "title": paper.get("title"),
+        "year": paper.get("year"),
+        "doi": paper.get("doi"),
+        "source_url": paper.get("source_url"),
+        "extraction": paper.get("extraction_method"),
+        "article_type": paper.get("article_type"),
+        "author_keywords": paper.get("author_keywords"),
+        "mesh_keywords": paper.get("mesh_keywords"),
+
+        "nanoparticle_name": nano.get("nanoparticle_name"),
+        "core_compositions": join_list(nano.get("core_compositions")),
+        "nm_category": nano.get("nm_category"),
+        "physical_phase": nano.get("physical_phase"),
+        "crystallinity": nano.get("crystallinity"),
+        "particle_size": nano.get("particle_size"),
+        "zeta_potential": nano.get("zeta_potential"),
+        "morphology": nano.get("morphology"),
+        "pdi": nano.get("pdi"),
+        "cas_number": nano.get("cas_number"),
+        "catalog_or_batch": nano.get("catalog_or_batch"),
+        "evidence": nano.get("evidence"),
+
+        "cell_viability": bio.get("cell_viability"),
+        "ros": bio.get("ros"),
+        "bio_evidence": bio.get("bio_evidence"),
+
+        "llm_model": paper.get("llm_model"),
+        "llm_status": paper.get("llm_status"),
     }
+    return row
