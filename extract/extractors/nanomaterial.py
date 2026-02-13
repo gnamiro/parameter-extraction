@@ -1,6 +1,56 @@
 import re
 from typing import Optional
 
+from extract.extractors.characterization import extract_characterization_fields
+from extract.extractors.characterization_regex import extract_characterization_regex
+
+
+
+NANOMATERIAL_DEFAULTS = {
+    # identity (existing)
+    "nanoparticle_name": None,
+    "core_compositions": [],
+    "nm_category": None,
+    "physical_phase": None,
+    "crystallinity": None,
+    "cas_number": None,
+    "catalog_or_batch": None,
+    # "evidence": None,
+
+    # your new descriptors
+    "particle_size": None,
+    "zeta_potential": None,
+    "morphology": None,
+    "pdi": None,
+
+    # characterization-sheet fields
+    "crystal_phase": None,
+    "purity_percent": None,
+    "impurities": None,
+    "supplier_manufacturer": None,
+    "address": None,
+    "supplier_code": None,
+    "batch_or_lot_no": None,
+    "nominal_diameter_nm": None,
+    "nominal_length_micron": None,
+    "nominal_specific_surface_area_m2_g": None,
+    "dispersant": None,
+    "tem_diameter_nm": None,
+    "tem_width_nm_median": None,
+    "tem_length_nm_median": None,
+    "no_of_walls": None,
+    "bet_surface_area_m2_g": None,
+    "dls_mean_diameter_water_nm": None,
+    "pdi_water": None,
+    "dls_mean_diameter_medium_nm": None,
+    "pdi_medium": None,
+    "zeta_potential_water_mV": None,
+    "zeta_potential_medium_mV": None,
+    "description_of_dispersion": None,
+    "endotoxins_EU_mg": None,
+}
+
+
 DASH = r"[-–—]"  # hyphen, en-dash, em-dash
 
 SIZE_RE = re.compile(
@@ -264,29 +314,15 @@ def extract_nanoparticle_name(text: str) -> Optional[str]:
 def extract_nanomaterial_identity(text: str) -> dict:
     cores = extract_core_compositions(text)
 
-    # Existing fields
-    out = {
-        "core_compositions": cores,
-        "nm_category": infer_nm_category(cores),
-        "physical_phase": extract_polymorph(text),
-        "crystallinity": extract_crystallinity(text),
-        "cas_number": extract_cas(text),
-        "catalog_or_batch": extract_catalog_or_batch(text),
-        "evidence": pick_evidence(text, cores) if cores else None,
-    }
+    out = dict(NANOMATERIAL_DEFAULTS)
+    out["core_compositions"] = cores
+    out["nm_category"] = infer_nm_category(cores)
+    out["physical_phase"] = extract_polymorph(text)
+    out["crystallinity"] = extract_crystallinity(text)
+    out["cas_number"] = extract_cas(text)
+    out["catalog_or_batch"] = extract_catalog_or_batch(text)
+    # out["evidence"] = pick_evidence(text, cores) if cores else None
 
-    # New descriptor fields
-    out["nanoparticle_name"] = extract_nanoparticle_name(text)
-    out["particle_size"] = extract_particle_size(text)
-    out["zeta_potential"] = extract_zeta_potential(text)
-    out["morphology"] = extract_morphology(text)
-    out["pdi"] = extract_pdi(text)
-
-    # Ensure keys exist even if missing (stable Excel schema)
-    out.setdefault("nanoparticle_name", None)
-    out.setdefault("particle_size", None)
-    out.setdefault("zeta_potential", None)
-    out.setdefault("morphology", None)
-    out.setdefault("pdi", None)
+    out.update(extract_characterization_regex(text))
 
     return out

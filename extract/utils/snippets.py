@@ -1,21 +1,20 @@
 import re
 from typing import List, Tuple
 
-DESCRIPTOR_PATTERNS: List[Tuple[str, str]] = [
-    ("particle_size", r"(particle\s+size|hydrodynamic\s+size|diameter|\bDLS\b|\bTEM\b|[0-9]\s*(?:\.\d+)?\s*nm)"),
-    ("zeta_potential", r"(zeta\s+potential|ζ|\bmV\b)"),
+PATTERNS: List[Tuple[str, str]] = [
+    ("size", r"(particle\s+size|hydrodynamic\s+size|diameter|\bDLS\b|\bTEM\b|[0-9]\s*(?:\.\d+)?\s*nm)"),
+    ("zeta", r"(zeta\s+potential|ζ|\bmV\b)"),
     ("pdi", r"(\bPDI\b|polydispersity\s+index|polydispersity)"),
-    ("cas", r"(\bCAS\b|\b\d{2,7}-\d{2}-\d\b)"),
+    ("bet", r"(\bBET\b|surface\s+area|m2/g|m²/g)"),
+    ("endotoxin", r"(endotoxin|EU/mg|EU\/mg)"),
+    ("tem", r"(\bTEM\b|SEM|transmission\s+electron)"),
+    ("supplier", r"(supplier|manufacturer|batch|lot|purity|impurit|address|code)"),
 ]
 
-def extract_descriptor_snippets(text: str, window: int = 180, max_snips: int = 12) -> str:
-    """
-    Returns a compact, labeled snippet bundle that contains the highest-signal
-    evidence for size / zeta / PDI / CAS from anywhere in the paper.
-    """
+def extract_descriptor_snippets(text: str, window: int = 200, max_snips: int = 14) -> str:
     out = []
-    for name, pattern in DESCRIPTOR_PATTERNS:
-        rgx = re.compile(pattern, re.I)
+    for name, pat in PATTERNS:
+        rgx = re.compile(pat, re.I)
         count = 0
         for m in rgx.finditer(text):
             start = max(0, m.start() - window)
@@ -23,10 +22,10 @@ def extract_descriptor_snippets(text: str, window: int = 180, max_snips: int = 1
             snip = text[start:end].replace("\n", " ").strip()
             out.append((name, snip))
             count += 1
-            if count >= max(1, max_snips // len(DESCRIPTOR_PATTERNS)):
+            if count >= 2:
                 break
 
-    # Deduplicate
+    # dedup
     seen = set()
     final = []
     for name, snip in out:

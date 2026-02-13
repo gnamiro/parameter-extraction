@@ -88,7 +88,32 @@ _ALLOWED_PAPER_FIELDS = {
 
 _ALLOWED_NANO_FIELDS = {
     "core_compositions", "nm_category", "physical_phase", "crystallinity",
-    "cas_number", "catalog_or_batch", "evidence",
+    "cas_number", "catalog_or_batch",
+}
+_ALLOWED_NANO_FIELDS |= {
+    "bet_surface_area_m2_g",
+    "dls_mean_diameter_water_nm",
+    "dls_mean_diameter_medium_nm",
+    "pdi_water",
+    "pdi_medium",
+    "zeta_potential_water_mV",
+    "zeta_potential_medium_mV",
+    "tem_diameter_nm",
+    "tem_width_nm_median",
+    "tem_length_nm_median",
+    "no_of_walls",
+    "purity_percent",
+    "impurities",
+    "supplier_manufacturer",
+    "address",
+    "supplier_code",
+    "batch_or_lot_no",
+    "nominal_diameter_nm",
+    "nominal_length_micron",
+    "nominal_specific_surface_area_m2_g",
+    "dispersant",
+    "description_of_dispersion",
+    "endotoxins_EU_mg",
 }
 
 def _sanitize_patch(patch: Dict[str, Any]) -> Dict[str, Any]:
@@ -106,14 +131,14 @@ def _sanitize_patch(patch: Dict[str, Any]) -> Dict[str, Any]:
     # Drop empty dicts
     out = {k: v for k, v in out.items() if isinstance(v, dict) and len(v) > 0}
     return out
-
 def refine_patch_with_ollama(
     draft_rules_result: dict,
     title_page_text: str,
     abstract_text: str,
     keywords_hint: str,
-    nanomaterial_evidence: str,
+    # nanomaterial_evidence: str,
     descriptor_snippets: str,
+    table_rows: list[str],    # NEW
     model: str,
     host: str = "http://localhost:11434",
     timeout: int = 120,
@@ -128,6 +153,7 @@ def refine_patch_with_ollama(
       - If unknown: OMIT the field (do NOT output null).
     """
 
+    # IMPORTANT: schema hint should not encourage nulls if you want omission
     schema_hint = {
         "paper": {
             "title": "string",
@@ -145,7 +171,34 @@ def refine_patch_with_ollama(
             "crystallinity": "string",
             "cas_number": "string (format: 1234-56-7)",
             "catalog_or_batch": "string (e.g., lot=ABC123)",
-            "evidence": "short string <=250 chars copied from provided text",
+
+            # characterization fields (OMIT if unknown)
+            "bet_surface_area_m2_g": "string",
+            "dls_mean_diameter_water_nm": "string",
+            "dls_mean_diameter_medium_nm": "string",
+            "pdi_water": "string",
+            "pdi_medium": "string",
+            "zeta_potential_water_mV": "string",
+            "zeta_potential_medium_mV": "string",
+            "tem_diameter_nm": "string",
+            "tem_width_nm_median": "string",
+            "tem_length_nm_median": "string",
+            "no_of_walls": "string",
+            "purity_percent": "string",
+            "impurities": "string",
+            "supplier_manufacturer": "string",
+            "address": "string",
+            "supplier_code": "string",
+            "batch_or_lot_no": "string",
+            "nominal_diameter_nm": "string",
+            "nominal_length_micron": "string",
+            "nominal_specific_surface_area_m2_g": "string",
+            "dispersant": "string",
+            "description_of_dispersion": "string",
+            "endotoxins_EU_mg": "string",
+
+            # evidence requirement (only if setting any nanomaterial fields)
+            # "evidence": "short string <=250 chars copied from snippets that supports the extracted numeric/material fields",
         }
     }
 
@@ -156,29 +209,33 @@ def refine_patch_with_ollama(
         "Top-level keys allowed: 'paper', 'nanomaterial'.\n"
         "Within each, include only fields you are confident are explicitly supported by the provided snippets.\n"
         "If a field is unknown, OMIT it (do NOT output null, do NOT guess).\n"
-        "If you set nanomaterial fields, include a short 'evidence' snippet (<=250 chars) copied from snippets.\n"
-        "If descriptor_snippets contains size/zeta/PDI/CAS values, extract them.\n"
-        "Only use the provided snippets. Do not infer values.\n"
-        "Schema:\n"
+        "If you set any nanomaterial characterization fields (size/zeta/PDI/DLS/BET/TEM/etc), "
+        # "also include 'evidence' as a short exact quote (<=250 chars) copied from snippets.\n"
+        "Prefer 'descriptor_snippets' for numeric/material characterization fields.\n"
+        "Do not rewrite the full object; output only the patch fields you are confident about.\n"
+        "Schema (for reference; OMIT unknown fields):\n"
+        "If table_rows contain numeric characterization data, you MAY normalize and assign values, but you MUST copy exact numbers from table_rows or descriptor_snippets. Do NOT invent measurements.\n"
         + json.dumps(schema_hint, ensure_ascii=False)
     )
 
-    # Keep the prompt compact; the model performs better and drops fewer fields
+    # NOTE: Put descriptor_snippets inside snippets for consistency
     payload = {
         "draft_rules_result": draft_rules_result,
         "snippets": {
             "title_page_text": (title_page_text or "")[:2500],
             "abstract_text": (abstract_text or "")[:2500],
             "keywords_hint": (keywords_hint or "")[:800],
-            "nanomaterial_evidence": (nanomaterial_evidence or "")[:1200],
+            # "nanomaterial_evidence": (nanomaterial_evidence or "")[:1200],
+            "descriptor_snippets": (descriptor_snippets or "")[:3500],
+            "table_rows": table_rows[:100],   # limit size
         },
         "output_instructions": {
             "format": "PATCH JSON only",
             "top_level_keys": ["paper", "nanomaterial"],
             "paper_fields_allowed": sorted(_ALLOWED_PAPER_FIELDS),
             "nanomaterial_fields_allowed": sorted(_ALLOWED_NANO_FIELDS),
+            "unknown_rule": "OMIT field if unknown (do NOT output null)",
         },
-        "descriptor_snippets": (descriptor_snippets or "")[:3500],
     }
 
     raw = ollama_chat(
